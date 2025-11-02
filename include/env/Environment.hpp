@@ -52,8 +52,6 @@ class Environment {
 
         int move_count_;
 
-        int total_reward_;
-
         float total_reward_;
 
         GameResult game_result_;

@@ -74,6 +74,9 @@ struct TrainingConfig {
     int checkpoint_interval = 10000; // Steps between checkpoints
     std::filesystem::path checkpoint_dir = "./checkpoints";
     
+    // Logging
+    int log_interval = 10;           // Steps between log messages
+    
     // Validation
     int validation_games = 100;      // Games for validation
     int validation_interval = 5000;  // Steps between validation

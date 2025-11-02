@@ -51,11 +51,13 @@ if(OpenMP_CXX_FOUND)
     target_compile_definitions(stac_core PUBLIC USE_OPENMP)
 endif()
 
-# Check if CUDA was found
+# Check if CUDA was actually built (not just an interface library)
 get_target_property(CUDA_TYPE stac_cuda TYPE)
 if(NOT CUDA_TYPE STREQUAL "INTERFACE_LIBRARY")
     target_compile_definitions(stac_core PUBLIC USE_CUDA)
     message(STATUS "Building with CUDA support")
+else()
+    message(STATUS "Building CPU-only version (CUDA disabled)")
 endif()
 
 # Create inference executable

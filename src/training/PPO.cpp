@@ -7,14 +7,6 @@
 #include <cmath>
 #include <iostream>
 
-#ifdef USE_CUDA
-#ifdef __CUDACC__
-#include "cuda/cuda_ops.cuh"
-#else
-#include "cuda/cuda_ops_stub.hpp"
-#endif
-#endif
-
 namespace stac::training {
 
 // ============================================================================

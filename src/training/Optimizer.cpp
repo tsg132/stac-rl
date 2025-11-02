@@ -3,15 +3,6 @@
 #include <cmath>
 #include <algorithm>
 
-#ifdef USE_CUDA
-#include <cuda_runtime.h>
-#ifdef __CUDACC__
-#include "cuda/cuda_ops.cuh"
-#else
-#include "cuda/cuda_ops_stub.hpp"
-#endif
-#endif
-
 namespace stac::training {
 
 // ============================================================================
@@ -28,10 +19,7 @@ AdamOptimizer::~AdamOptimizer() {
         delete[] group.v;
         
 #ifdef USE_CUDA
-        if (use_cuda_) {
-            cudaFree(group.d_m);
-            cudaFree(group.d_v);
-        }
+        // CUDA cleanup handled by CUDA kernels
 #endif
     }
 }

@@ -4,6 +4,10 @@
 #include <vector>
 #include <memory>
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace stac::training {
 
 // ============================================================================

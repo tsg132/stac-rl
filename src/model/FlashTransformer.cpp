@@ -5,6 +5,10 @@
 #include <cassert>
 #include <immintrin.h>  // For SIMD
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace stac::model {
 
 // ============================================================================

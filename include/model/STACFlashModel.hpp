@@ -7,6 +7,12 @@
 #include <memory>
 #include <filesystem>
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cublas_v2.h>
+#endif
+
 namespace stac::model {
 
 // ============================================================================

@@ -5,6 +5,11 @@
 #include <memory>
 #include <cmath>
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#endif
+
 namespace stac::model {
 
 // ============================================================================

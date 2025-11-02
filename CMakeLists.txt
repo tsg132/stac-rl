@@ -29,6 +29,9 @@ file(GLOB TRAINING_SOURCES "src/training/*.cpp")
 file(GLOB ENV_SOURCES "src/env/*.cpp")
 file(GLOB MAIN_SOURCES "src/main_infer.cpp")
 
+# Exclude old broken files
+list(FILTER TRAINING_SOURCES EXCLUDE REGEX ".*PPO_old\\.cpp$")
+
 set(SOURCES ${MODEL_SOURCES} ${TRAINING_SOURCES} ${ENV_SOURCES})
 
 # Add CUDA subdirectory first

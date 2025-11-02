@@ -152,19 +152,18 @@ void AdamOptimizer::zero_grad() {
 void AdamOptimizer::to_cuda(int device_id) {
     use_cuda_ = true;
     device_id_ = device_id;
-    cudaSetDevice(device_id);
+    cuda_set_device(device_id);
     
     for (auto& group : param_groups_) {
         if (!group.d_params) {
-            cudaMalloc(&group.d_params, group.size * sizeof(float));
-            cudaMalloc(&group.d_grads, group.size * sizeof(float));
-            cudaMalloc(&group.d_m, group.size * sizeof(float));
-            cudaMalloc(&group.d_v, group.size * sizeof(float));
+            group.d_params = (float*)cuda_malloc(group.size * sizeof(float));
+            group.d_grads = (float*)cuda_malloc(group.size * sizeof(float));
+            group.d_m = (float*)cuda_malloc(group.size * sizeof(float));
+            group.d_v = (float*)cuda_malloc(group.size * sizeof(float));
             
-            cudaMemcpy(group.d_params, group.params, 
-                      group.size * sizeof(float), cudaMemcpyHostToDevice);
-            cudaMemset(group.d_m, 0, group.size * sizeof(float));
-            cudaMemset(group.d_v, 0, group.size * sizeof(float));
+            cuda_memcpy_h2d(group.d_params, group.params, group.size * sizeof(float));
+            cuda_memset(group.d_m, 0, group.size * sizeof(float));
+            cuda_memset(group.d_v, 0, group.size * sizeof(float));
         }
     }
 }

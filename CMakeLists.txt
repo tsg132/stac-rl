@@ -23,13 +23,15 @@ endif()
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/cuda)
 
-# Source files
-file(GLOB_RECURSE MODEL_SOURCES "src/model/*.cpp")
-file(GLOB_RECURSE TRAINING_SOURCES "src/training/*.cpp")
-file(GLOB_RECURSE ENV_SOURCES "src/env/*.cpp")
+# Source files (exclude broken PPO for now)
+file(GLOB MODEL_SOURCES "src/model/*.cpp")
+file(GLOB ENV_SOURCES "src/env/*.cpp")
 file(GLOB MAIN_SOURCES "src/main_infer.cpp")
 
-set(SOURCES ${MODEL_SOURCES} ${TRAINING_SOURCES} ${ENV_SOURCES})
+# Exclude broken files temporarily
+list(FILTER MODEL_SOURCES EXCLUDE REGEX ".*STACFlashModel\\.cpp$")
+
+set(SOURCES ${MODEL_SOURCES} ${ENV_SOURCES})
 
 # Add CUDA subdirectory first
 add_subdirectory(cuda)
@@ -64,9 +66,9 @@ endif()
 add_executable(stac_infer ${MAIN_SOURCES})
 target_link_libraries(stac_infer PRIVATE stac_core)
 
-# Create training executable (optional)
-add_executable(stac_train src/main_train.cpp)
-target_link_libraries(stac_train PRIVATE stac_core)
+# Training executable disabled (use PyTorch scripts instead)
+# add_executable(stac_train src/main_train.cpp)
+# target_link_libraries(stac_train PRIVATE stac_core)
 
 message(STATUS "STAC-RL project configured successfully")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")

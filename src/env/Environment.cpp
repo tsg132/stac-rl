@@ -28,7 +28,13 @@ StepResult Environment::reset(const std::string& fen) {
     std::fill(observation_.begin(), observation_.end(), 0.0f);
     std::fill(action_mask_.begin(), action_mask_.end(), 0);
     
-    return StepResult{observation_, action_mask_, 0.0f, false, game_result_};
+    StepResult result;
+    result.observation = observation_.get_data();
+    result.legal_actions = action_mask_;
+    result.reward = 0.0f;
+    result.done = false;
+    result.result = game_result_;
+    return result;
 }
 
 StepResult Environment::step(ActionIndex action_index) {
@@ -44,7 +50,13 @@ StepResult Environment::step(ActionIndex action_index) {
     // Check if game is done
     // TODO: Implement actual game over check
     
-    return StepResult{observation_, action_mask_, reward, done_, game_result_};
+    StepResult result;
+    result.observation = observation_.get_data();
+    result.legal_actions = action_mask_;
+    result.reward = reward;
+    result.done = done_;
+    result.result = game_result_;
+    return result;
 }
 
 void Environment::set_external_state(const Observation& obs,

@@ -22,6 +22,7 @@ if(CMAKE_CUDA_COMPILER AND USE_CUDA)
     set(CUDA_SOURCES
         flash_attention_kernel.cu
         cuda_ops.cu
+        cuda_wrappers.cu
     )
     
     # Create CUDA library

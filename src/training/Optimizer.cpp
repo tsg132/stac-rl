@@ -3,6 +3,20 @@
 #include <cmath>
 #include <algorithm>
 
+#ifdef USE_CUDA
+extern "C" {
+    // External declarations for CUDA functions (implemented in .cu files)
+    void* cuda_malloc(size_t size);
+    void cuda_free(void* ptr);
+    void cuda_memcpy_h2d(void* dst, const void* src, size_t size);
+    void cuda_memset(void* ptr, int value, size_t size);
+    void cuda_set_device(int device);
+}
+namespace stac::cuda {
+    void zero_gradients(float* grads, int size);
+}
+#endif
+
 namespace stac::training {
 
 // ============================================================================
@@ -19,7 +33,10 @@ AdamOptimizer::~AdamOptimizer() {
         delete[] group.v;
         
 #ifdef USE_CUDA
-        // CUDA cleanup handled by CUDA kernels
+        if (use_cuda_) {
+            cuda_free(group.d_m);
+            cuda_free(group.d_v);
+        }
 #endif
     }
 }

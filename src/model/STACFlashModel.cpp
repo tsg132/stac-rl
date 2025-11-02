@@ -1,31 +1,15 @@
 #include "model/STACFlashModel.hpp"
 #include <iostream>
 
-namespace stac {
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cublas_v2.h>
+#endif
 
-STACModel::STACModel(int observationDim, int actionDim, int modelDim, int numHeads, int numLayers)
-    : transformer(observationDim, modelDim, numHeads, numLayers),
-      actionSpace(actionDim),
-      observationDim(observationDim),
-      actionDim(actionDim) {
-}
+namespace stac::model {
 
-ActionVector STACModel::selectAction(const Observation& obs) {
-    StateVector encoded = transformer.forward(obs.getState());
-    return actionSpace.sample();
-}
+// TODO: Implement actual model factory and methods
+// This is a placeholder to allow compilation
 
-Float STACModel::evaluateValue(const Observation& obs) {
-    StateVector encoded = transformer.forward(obs.getState());
-    return 0.0f;
-}
-
-void STACModel::save(const std::string& path) const {
-    std::cout << "Saving model to: " << path << std::endl;
-}
-
-void STACModel::load(const std::string& path) {
-    std::cout << "Loading model from: " << path << std::endl;
-}
-
-} // namespace stac
+} // namespace stac::model

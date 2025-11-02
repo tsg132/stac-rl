@@ -3,10 +3,9 @@
 #include <algorithm>
 #include <random>
 #include <cassert>
-#include <immintrin.h>  // For SIMD
 
-#ifdef USE_CUDA
-#include <cuda_runtime.h>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>  // For SIMD on x86
 #endif
 
 namespace stac::model {

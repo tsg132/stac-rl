@@ -53,20 +53,21 @@ void AdamOptimizer::add_param_group(float* params, float* grads, int size) {
     std::fill(group.m, group.m + size, 0.0f);
     std::fill(group.v, group.v + size, 0.0f);
     
-#ifdef USE_CUDA
-    if (use_cuda_) {
-        cudaMalloc(&group.d_params, size * sizeof(float));
-        cudaMalloc(&group.d_grads, size * sizeof(float));
-        cudaMalloc(&group.d_m, size * sizeof(float));
-        cudaMalloc(&group.d_v, size * sizeof(float));
-        
-        cudaMemset(group.d_m, 0, size * sizeof(float));
-        cudaMemset(group.d_v, 0, size * sizeof(float));
-    }
     group.d_params = nullptr;
     group.d_grads = nullptr;
     group.d_m = nullptr;
     group.d_v = nullptr;
+    
+#ifdef USE_CUDA
+    if (use_cuda_) {
+        group.d_params = (float*)cuda_malloc(size * sizeof(float));
+        group.d_grads = (float*)cuda_malloc(size * sizeof(float));
+        group.d_m = (float*)cuda_malloc(size * sizeof(float));
+        group.d_v = (float*)cuda_malloc(size * sizeof(float));
+        
+        cuda_memset(group.d_m, 0, size * sizeof(float));
+        cuda_memset(group.d_v, 0, size * sizeof(float));
+    }
 #endif
     
     param_groups_.push_back(group);

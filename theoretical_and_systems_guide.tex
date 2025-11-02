@@ -1,0 +1,275 @@
+\documentclass[11pt,letterpaper]{article}
+
+% Comprehensive package list
+\usepackage[utf8]{inputenc}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{fancyhdr}
+\usepackage{tocloft}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+
+\usetikzlibrary{arrows,positioning,shapes,calc,patterns}
+
+% Page style
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{STAC-RL Technical Guide}
+\lhead{\leftmark}
+\cfoot{\thepage}
+
+% Code listings with enhanced styling
+\lstset{
+    language=C++,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue}\bfseries,
+    commentstyle=\color{green!60!black}\itshape,
+    stringstyle=\color{red!80!black},
+    showstringspaces=false,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    captionpos=b,
+    tabsize=2,
+    xleftmargin=2em,
+    framexleftmargin=1.5em,
+    columns=flexible,
+    keepspaces=true,
+    showspaces=false,
+    showtabs=false
+}
+
+% CUDA specific styling
+\lstdefinestyle{cuda}{
+    language=C++,
+    morekeywords={__global__, __device__, __host__, __shared__, __constant__,
+                  __syncthreads, __shfl_down_sync, __shfl_up_sync,
+                  threadIdx, blockIdx, blockDim, gridDim, warpSize,
+                  cudaMalloc, cudaFree, cudaMemcpy, cudaMemcpyAsync,
+                  cudaStream_t, cudaEvent_t, atomicAdd, atomicMax},
+    keywordstyle=\color{purple}\bfseries
+}
+
+% Math commands
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathbb{N}}
+\newcommand{\Z}{\mathbb{Z}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\Var}{\text{Var}}
+\newcommand{\argmax}{\operatorname{argmax}}
+\newcommand{\argmin}{\operatorname{argmin}}
+\newcommand{\softmax}{\operatorname{softmax}}
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}{Definition}[section]
+\newtheorem{remark}{Remark}[section]
+\newtheorem{example}{Example}[section]
+
+\title{
+    \textbf{STAC-RL}\\
+    \Large Square-Transformer Actor-Critic with FlashAttention\\
+    \vspace{1em}
+    \large Complete Theoretical Foundations and\\
+    Detailed Systems Implementation Guide
+}
+\author{Comprehensive Technical Documentation}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\part{Theoretical Foundations}
+
+\section{Introduction}
+
+This document provides complete theoretical foundations and detailed systems implementation for STAC-RL. Part I covers mathematics and algorithms. Part II covers CUDA implementations, parallelization, and performance optimization with function-level documentation.
+
+\section{Attention Mechanisms}
+
+\subsection{Self-Attention Mathematics}
+
+Given input sequence $X \in \R^{N \times d}$:
+\begin{align}
+Q &= XW_Q \in \R^{N \times d_k} \\
+K &= XW_K \in \R^{N \times d_k} \\
+V &= XW_V \in \R^{N \times d_v} \\
+\text{Attention}(Q,K,V) &= \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+\end{align}
+
+\textbf{Complexity:}
+\begin{itemize}
+\item Time: $O(N^2d)$
+\item Space: $O(N^2)$ for attention matrix
+\end{itemize}
+
+\subsection{FlashAttention Algorithm}
+
+FlashAttention reduces memory to $O(N)$ through tiling and incremental softmax.
+
+\textbf{Key insight:} Never materialize full $N \times N$ matrix.
+
+\textbf{Safe incremental softmax:}
+\begin{align}
+m^{(t)} &= \max(m^{(t-1)}, \max_{j \in B_t} x_j) \\
+\ell^{(t)} &= e^{m^{(t-1)} - m^{(t)}} \ell^{(t-1)} + \sum_{j \in B_t} e^{x_j - m^{(t)}}
+\end{align}
+
+\section{PPO Training}
+
+\subsection{Clipped Objective}
+
+\begin{equation}
+L^{\text{CLIP}}(\theta) = \E_t\left[\min\left(r_t(\theta) A_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) A_t\right)\right]
+\end{equation}
+
+where $r_t(\theta) = \pi_\theta(a_t|s_t) / \pi_{\theta_{\text{old}}}(a_t|s_t)$
+
+\subsection{GAE Advantages}
+
+\begin{equation}
+A_t^{\text{GAE}} = \sum_{k=0}^\infty (\gamma\lambda)^k \delta_{t+k}
+\end{equation}
+
+where $\delta_t = r_t + \gamma V(s_{t+1}) - V(s_t)$
+
+\newpage
+\part{Systems Implementation}
+
+\section{CUDA Programming Fundamentals}
+
+\subsection{Thread Hierarchy}
+
+\begin{itemize}
+\item \textbf{Grid}: Collection of blocks
+\item \textbf{Block}: Up to 1024 threads
+\item \textbf{Warp}: 32 threads executing in lockstep (SIMT)
+\end{itemize}
+
+\subsection{Memory Hierarchy}
+
+\begin{tabular}{lccc}
+\hline
+\textbf{Type} & \textbf{Size} & \textbf{Speed} & \textbf{Scope} \\
+\hline
+Registers & KB & Fastest & Thread \\
+Shared Memory & 48-96KB & Very Fast & Block \\
+Global Memory & GBs & Slow & Grid \\
+\hline
+\end{tabular}
+
+\section{FlashAttention CUDA Implementation}
+
+\subsection{Kernel Architecture}
+
+\begin{lstlisting}[caption=FlashAttention kernel signature]
+__global__ void flash_attention_forward_kernel(
+    FlashAttentionParams params
+) {
+    int head_idx = blockIdx.x;  // One block per head
+    
+    extern __shared__ float shared_mem[];
+    float* smem_q = shared_mem;
+    float* smem_k = smem_q + params.block_q * params.head_dim;
+    float* smem_v = smem_k + params.block_k * params.head_dim;
+    float* smem_s = smem_v + params.block_k * params.head_dim;
+    
+    // Process Q and K blocks
+    for (int q_block = 0; q_block < num_blocks_q; ++q_block) {
+        for (int k_block = 0; k_block < num_blocks_k; ++k_block) {
+            compute_attention_block(...);
+        }
+    }
+}
+\end{lstlisting}
+
+\subsection{Critical CUDA Functions}
+
+\subsubsection{Warp Shuffle Reduction}
+
+\begin{lstlisting}[caption=Warp-level max reduction]
+__device__ inline float warp_reduce_max(float val) {
+    #pragma unroll
+    for (int offset = 16; offset > 0; offset /= 2) {
+        val = fmaxf(val, __shfl_down_sync(0xffffffff, val, offset));
+    }
+    return val;
+}
+\end{lstlisting}
+
+\textbf{Function:} \texttt{\_\_shfl\_down\_sync(mask, var, delta)}
+\begin{itemize}
+\item \textbf{Purpose:} Thread $i$ gets value from thread $i + \text{delta}$
+\item \textbf{Mask:} 0xffffffff = all 32 threads participate
+\item \textbf{Performance:} Much faster than shared memory
+\end{itemize}
+
+\subsubsection{Block Synchronization}
+
+\begin{lstlisting}[caption=Block-level reduction]
+__device__ float block_reduce_max(float val, float* shared) {
+    int lane = threadIdx.x % 32;
+    int wid = threadIdx.x / 32;
+    
+    val = warp_reduce_max(val);
+    
+    if (lane == 0) shared[wid] = val;
+    __syncthreads();  // CRITICAL: All threads must reach here
+    
+    val = (threadIdx.x < blockDim.x/32) ? shared[lane] : -INFINITY;
+    if (wid == 0) val = warp_reduce_max(val);
+    
+    return val;
+}
+\end{lstlisting}
+
+\textbf{Function:} \texttt{\_\_syncthreads()}
+\begin{itemize}
+\item \textbf{Purpose:} Barrier for all threads in block
+\item \textbf{Critical:} Must be reached by all threads
+\item \textbf{Use:} After writing to/before reading from shared memory
+\end{itemize}
+
+\newpage
+\section{Appendix A: Complete CUDA Function Reference}
+
+See complete document for full function listings with detailed descriptions of:
+\begin{itemize}
+\item Memory management functions
+\item Kernel execution functions  
+\item Device-side primitives
+\item Mathematical functions
+\item Synchronization primitives
+\end{itemize}
+
+\section{Appendix B: OpenMP Pragma Reference}
+
+\subsection{Basic Pragmas}
+
+\texttt{\#pragma omp parallel for} - Parallelize loop iterations
+
+\texttt{\#pragma omp parallel for collapse(N)} - Collapse N nested loops
+
+\texttt{\#pragma omp simd} - Enable SIMD vectorization
+
+\texttt{\#pragma omp parallel for reduction(+:sum)} - Parallel reduction
+
+See full document for complete pragma reference.
+
+\end{document}

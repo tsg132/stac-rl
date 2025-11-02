@@ -1,0 +1,796 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+
+\title{STAC-RL: Square-Transformer Actor-Critic with FlashAttention\\
+\large Design Document and Mathematical Foundations}
+\author{STAC-RL Project Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Executive Summary}
+% ============================================================================
+
+STAC-RL is a high-performance reinforcement learning framework designed for chess and board game AI, built entirely in C++ with CUDA acceleration. The system combines state-of-the-art transformer architectures with advanced attention mechanisms and policy gradient methods to create a scalable, efficient, and powerful learning agent.
+
+\subsection{Key Features}
+\begin{itemize}
+    \item \textbf{FlashAttention Implementation}: IO-aware attention algorithm with $O(N^2)$ time complexity but sublinear memory requirements
+    \item \textbf{Transformer-Based Policy Network}: Optimized for 64-token sequences (8$\times$8 chess board)
+    \item \textbf{PPO Training Framework}: Proximal Policy Optimization for stable learning
+    \item \textbf{CUDA Acceleration}: High-throughput batch inference and training
+    \item \textbf{Modular Architecture}: Clean separation between model, environment, and training components
+\end{itemize}
+
+% ============================================================================
+\section{Architecture Overview}
+% ============================================================================
+
+\subsection{System Components}
+
+The STAC-RL system is organized into four primary modules:
+
+\begin{enumerate}
+    \item \textbf{Model Module} (\texttt{model/}): Transformer architecture, FlashAttention, policy/value heads
+    \item \textbf{Environment Module} (\texttt{env/}): Chess environment, UCI/Lichess adapters, observation encoding
+    \item \textbf{Training Module} (\texttt{training/}): PPO algorithm, gradient computation, optimization
+    \item \textbf{Common Module} (\texttt{common/}): Type definitions, configuration, utilities
+\end{enumerate}
+
+\subsection{Data Flow}
+
+\begin{equation}
+\text{Chess Position} \xrightarrow{\text{Encoder}} \text{Observation Tensor} \xrightarrow{\text{Model}} \begin{cases} \text{Policy Logits} \\ \text{Value Estimate} \end{cases}
+\end{equation}
+
+\subsection{Type System}
+
+The system uses strongly-typed definitions for all chess-related concepts:
+
+\begin{align*}
+\text{Square} &\in [0, 63] \quad \text{(board position)} \\
+\text{Plane} &\in [0, 72] \quad \text{(action encoding)} \\
+\text{ActionIndex} &= \text{Square} \times 73 + \text{Plane} \in [0, 4671] \\
+\text{ObservationTensor} &\in \mathbb{R}^{18 \times 8 \times 8} \quad \text{(18 feature planes)}
+\end{align*}
+
+% ============================================================================
+\section{FlashAttention: Theory and Implementation}
+% ============================================================================
+
+\subsection{Standard Attention Mechanism}
+
+The standard multi-head attention mechanism is defined as:
+
+\begin{equation}
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+\end{equation}
+
+where:
+\begin{align*}
+Q &= XW_Q \in \mathbb{R}^{N \times d_k} \quad \text{(Query)} \\
+K &= XW_K \in \mathbb{R}^{N \times d_k} \quad \text{(Key)} \\
+V &= XW_V \in \mathbb{R}^{N \times d_v} \quad \text{(Value)} \\
+X &\in \mathbb{R}^{N \times d} \quad \text{(Input sequence)}
+\end{align*}
+
+\textbf{Computational Complexity:}
+\begin{itemize}
+    \item Time: $O(N^2 d)$
+    \item Memory: $O(N^2 + Nd)$ for storing attention matrix $S = QK^T$
+\end{itemize}
+
+\subsection{FlashAttention Algorithm}
+
+FlashAttention \cite{dao2022flashattention} addresses the memory bottleneck by:
+\begin{enumerate}
+    \item \textbf{Tiling}: Dividing matrices into blocks that fit in SRAM
+    \item \textbf{Recomputation}: Computing softmax in a numerically stable, incremental manner
+    \item \textbf{Kernel Fusion}: Fusing operations to minimize HBM (High Bandwidth Memory) accesses
+\end{enumerate}
+
+\subsubsection{Mathematical Formulation}
+
+The key insight is to compute attention incrementally using the following recurrence:
+
+Let $m^{(i)}$ be the running maximum and $\ell^{(i)}$ be the running sum of exponentials:
+
+\begin{align}
+m^{(i)} &= \max(m^{(i-1)}, \text{rowmax}(S_i)) \\
+\tilde{\ell}^{(i)} &= e^{m^{(i-1)} - m^{(i)}} \ell^{(i-1)} + \text{rowsum}(e^{S_i - m^{(i)}}) \\
+\tilde{O}^{(i)} &= e^{m^{(i-1)} - m^{(i)}} O^{(i-1)} + e^{S_i - m^{(i)}} V_i
+\end{align}
+
+where:
+\begin{itemize}
+    \item $S_i = Q_i K_i^T / \sqrt{d_k}$ is a block of attention scores
+    \item $O^{(i)}$ is the output accumulated up to block $i$
+    \item The exponential rescaling ensures numerical stability (safe softmax)
+\end{itemize}
+
+Final output:
+\begin{equation}
+O = \frac{\tilde{O}^{(N)}}{\tilde{\ell}^{(N)}}
+\end{equation}
+
+\subsubsection{Algorithm Details}
+
+\begin{algorithm}[H]
+\caption{FlashAttention Forward Pass}
+\begin{algorithmic}[1]
+\STATE \textbf{Input:} $Q, K, V \in \mathbb{R}^{N \times d}$, block sizes $B_q, B_k$
+\STATE \textbf{Initialize:} $O = \mathbf{0}_{N \times d}$, $\ell = \mathbf{0}_N$, $m = -\infty \cdot \mathbf{1}_N$
+\STATE Divide $Q$ into blocks $Q_1, \ldots, Q_{T_q}$ of size $B_q$
+\STATE Divide $K, V$ into blocks $K_1, V_1, \ldots, K_{T_k}, V_{T_k}$ of size $B_k$
+\FOR{$i = 1$ to $T_q$}
+    \STATE Load $Q_i$ from HBM to SRAM
+    \STATE Initialize $O_i = \mathbf{0}$, $\ell_i = \mathbf{0}$, $m_i = -\infty \cdot \mathbf{1}$
+    \FOR{$j = 1$ to $T_k$}
+        \STATE Load $K_j, V_j$ from HBM to SRAM
+        \STATE Compute $S_{ij} = Q_i K_j^T / \sqrt{d_k}$ \hfill // Attention scores
+        \STATE Compute $m_i^{\text{new}} = \max(m_i, \text{rowmax}(S_{ij}))$
+        \STATE Compute $P_{ij} = \exp(S_{ij} - m_i^{\text{new}})$ \hfill // Numerically stable
+        \STATE Compute $\ell_i^{\text{new}} = e^{m_i - m_i^{\text{new}}} \ell_i + \text{rowsum}(P_{ij})$
+        \STATE Update $O_i \leftarrow e^{m_i - m_i^{\text{new}}} O_i + P_{ij} V_j$
+        \STATE Update $m_i \leftarrow m_i^{\text{new}}$, $\ell_i \leftarrow \ell_i^{\text{new}}$
+    \ENDFOR
+    \STATE Finalize $O_i \leftarrow O_i / \ell_i$
+    \STATE Write $O_i$ to HBM
+\ENDFOR
+\STATE \textbf{Return:} $O$
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Memory Analysis}
+
+\textbf{Standard Attention:}
+\begin{itemize}
+    \item Stores full attention matrix: $O(N^2)$
+    \item Total memory: $O(N^2 + Nd)$
+\end{itemize}
+
+\textbf{FlashAttention:}
+\begin{itemize}
+    \item Only stores blocks in SRAM: $O(B_q B_k)$
+    \item Total HBM memory: $O(Nd)$ \quad (no attention matrix!)
+    \item SRAM memory: $O(B_q d + B_k d)$
+\end{itemize}
+
+For $N = 64$ (chess board), $d = 512$, $B_q = B_k = 64$:
+\begin{align*}
+\text{Standard:} \quad &64^2 + 64 \times 512 = 4{,}096 + 32{,}768 = 36{,}864 \text{ floats} \\
+\text{FlashAttention:} \quad &64 \times 512 = 32{,}768 \text{ floats} \quad \text{(8.5x reduction)}
+\end{align*}
+
+\subsection{Implementation in STAC-RL}
+
+\subsubsection{CPU Implementation}
+
+The CPU implementation in \texttt{FlashTransformer.cpp} uses:
+
+\begin{itemize}
+    \item \textbf{Tiled computation}: Block sizes of 64$\times$64 for cache locality
+    \item \textbf{OpenMP parallelization}: Parallel loops over batches and heads
+    \item \textbf{SIMD vectorization}: \texttt{\#pragma omp simd} for inner loops
+    \item \textbf{Aligned memory}: 64-byte alignment for optimal cache line usage
+\end{itemize}
+
+Key code structure:
+\begin{verbatim}
+void FlashAttention::forward_cpu_tiled(
+    const float* qkv, float* output,
+    int batch_size, int seq_len) const {
+    
+    // Allocate buffers for running statistics
+    std::vector<float> m_buffer(batch * heads * seq);  // max
+    std::vector<float> l_buffer(batch * heads * seq);  // sum
+    
+    #pragma omp parallel for collapse(2)
+    for (int b = 0; b < batch_size; ++b) {
+        for (int h = 0; h < num_heads_; ++h) {
+            // Process in blocks
+            for (int q_block : blocks_q) {
+                for (int k_block : blocks_k) {
+                    // Compute attention for this block
+                    compute_block_attention(...);
+                }
+            }
+        }
+    }
+}
+\end{verbatim}
+
+\subsubsection{CUDA Implementation (Planned)}
+
+The CUDA kernel will implement:
+
+\begin{itemize}
+    \item \textbf{Thread block mapping}: One thread block per attention head
+    \item \textbf{Shared memory usage}: Store $Q_i$, $K_j$, $V_j$ blocks in shared memory
+    \item \textbf{Warp-level primitives}: Use \texttt{\_\_shfl\_down\_sync} for reductions
+    \item \textbf{Memory coalescing}: Ensure coalesced global memory accesses
+\end{itemize}
+
+Expected performance:
+\begin{itemize}
+    \item Batch size 256: $\sim$200-300 FPS on RTX 3090
+    \item Memory bandwidth utilization: $>$80\%
+    \item Kernel launch overhead: $<$50$\mu$s
+\end{itemize}
+
+% ============================================================================
+\section{Transformer Architecture}
+% ============================================================================
+
+\subsection{Model Configuration}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\hline
+\textbf{Model} & \textbf{Layers} & \textbf{Dim} & \textbf{Heads} & \textbf{Parameters} \\
+\hline
+Small  & 4  & 256  & 8  & 3.2M  \\
+Base   & 8  & 512  & 8  & 16.8M \\
+Large  & 12 & 768  & 12 & 45.6M \\
+XLarge & 24 & 1024 & 16 & 132M  \\
+\hline
+\end{tabular}
+\caption{Model variants and their configurations}
+\end{table}
+
+\subsection{Transformer Block}
+
+Each transformer block implements the pre-normalization architecture:
+
+\begin{align}
+h_1 &= x + \text{MultiHeadAttention}(\text{RMSNorm}(x)) \\
+h_2 &= h_1 + \text{SwiGLU}(\text{RMSNorm}(h_1))
+\end{align}
+
+\subsubsection{RMSNorm}
+
+Root Mean Square Layer Normalization is more efficient than LayerNorm:
+
+\begin{equation}
+\text{RMSNorm}(x) = \frac{x}{\text{RMS}(x)} \odot \gamma, \quad \text{RMS}(x) = \sqrt{\frac{1}{d}\sum_{i=1}^d x_i^2 + \epsilon}
+\end{equation}
+
+Advantages:
+\begin{itemize}
+    \item No mean computation (saves one pass over data)
+    \item No bias term (fewer parameters)
+    \item Empirically equivalent performance to LayerNorm
+\end{itemize}
+
+\subsubsection{Multi-Head Attention}
+
+\begin{align}
+\text{MHA}(X) &= \text{Concat}(\text{head}_1, \ldots, \text{head}_h) W^O \\
+\text{head}_i &= \text{FlashAttention}(XW_i^Q, XW_i^K, XW_i^V)
+\end{align}
+
+where:
+\begin{align*}
+W_i^Q, W_i^K, W_i^V &\in \mathbb{R}^{d \times d_k}, \quad d_k = d / h \\
+W^O &\in \mathbb{R}^{d \times d}
+\end{align*}
+
+\subsubsection{SwiGLU Activation}
+
+SwiGLU (Swish-Gated Linear Unit) outperforms standard FFN:
+
+\begin{align}
+\text{SwiGLU}(x) &= (\text{Swish}(xW_1) \odot xW_2) W_3 \\
+\text{Swish}(x) &= x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}
+\end{align}
+
+where:
+\begin{align*}
+W_1, W_2 &\in \mathbb{R}^{d \times d_{\text{ffn}}}, \quad d_{\text{ffn}} = 4d \\
+W_3 &\in \mathbb{R}^{d_{\text{ffn}} \times d}
+\end{align*}
+
+Benefits:
+\begin{itemize}
+    \item Smooth, non-monotonic activation
+    \item Gating mechanism for selective information flow
+    \item Better gradient properties than ReLU
+\end{itemize}
+
+\subsection{Positional Encoding}
+
+For chess, we use learned \textbf{absolute position embeddings} rather than sinusoidal:
+
+\begin{equation}
+\text{Token}_i = \text{ObsEmbed}(x_i) + \text{PosEmbed}(i), \quad i \in [0, 63]
+\end{equation}
+
+Alternative (future work): \textbf{Rotary Position Embedding (RoPE)}:
+
+\begin{align}
+\text{RoPE}(q_m, m) &= \begin{bmatrix} \cos(m\theta) & -\sin(m\theta) \\ \sin(m\theta) & \cos(m\theta) \end{bmatrix} \begin{bmatrix} q_m^{(2i)} \\ q_m^{(2i+1)} \end{bmatrix} \\
+\theta_i &= 10000^{-2i/d}
+\end{align}
+
+% ============================================================================
+\section{Chess-Specific Components}
+% ============================================================================
+
+\subsection{Observation Encoding}
+
+The observation tensor encodes a chess position as 18 planes of $8 \times 8$:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+\textbf{Planes} & \textbf{Description} \\
+\hline
+0-5   & My pieces (P, N, B, R, Q, K) \\
+6-11  & Opponent pieces (P, N, B, R, Q, K) \\
+12    & Repetition count (1 or 2) \\
+13    & Color (1 = white, 0 = black) \\
+14    & Total move count / 100 \\
+15    & My castling rights (KQ) \\
+16    & Opponent castling rights (KQ) \\
+17    & No-progress count / 100 \\
+\hline
+\end{tabular}
+\caption{Observation tensor plane definitions}
+\end{table}
+
+\textbf{Embedding Layer:}
+\begin{equation}
+\text{Token}_{ij} = \sum_{p=0}^{17} \text{Obs}[p, i, j] \cdot W_p + b \in \mathbb{R}^d
+\end{equation}
+
+where $W_p \in \mathbb{R}^d$ are learned per-plane embeddings.
+
+\subsection{Action Space Encoding}
+
+The action space uses AlphaZero's factorized representation:
+
+\begin{equation}
+\text{Action} = (\text{from\_square}, \text{plane}) \in [0, 63] \times [0, 72]
+\end{equation}
+
+\textbf{Plane encoding:}
+\begin{itemize}
+    \item Planes 0-55: Queen moves (8 directions $\times$ 7 distances)
+    \item Planes 56-63: Knight moves (8 possible L-shapes)
+    \item Planes 64-72: Underpromotions (3 directions $\times$ 3 pieces)
+\end{itemize}
+
+Total action space: $64 \times 73 = 4{,}672$ possible actions
+
+\subsection{Policy Head}
+
+The policy head generates action logits:
+
+\begin{align}
+h &= \text{Transformer}(\text{ObsEmbed}(x)) \in \mathbb{R}^{64 \times d} \\
+f &= \text{Linear}(h) \in \mathbb{R}^{64 \times d} \quad \text{(per-square features)} \\
+\pi &= \text{Linear}(f) \in \mathbb{R}^{64 \times 73} \quad \text{(logits per square-plane pair)} \\
+\pi_{\text{flat}} &= \text{Flatten}(\pi) \in \mathbb{R}^{4672}
+\end{align}
+
+Masked softmax with legal moves:
+\begin{equation}
+P(a | s) = \frac{\exp(\pi_a) \cdot \mathbb{1}_{\text{legal}}(a)}{\sum_{a' \in \mathcal{A}_{\text{legal}}} \exp(\pi_{a'})}
+\end{equation}
+
+\subsection{Value Head}
+
+The value head estimates expected game outcome:
+
+\begin{align}
+h &= \text{Transformer}(\text{ObsEmbed}(x)) \in \mathbb{R}^{64 \times d} \\
+h_{\text{pool}} &= \text{Mean}(h, \text{dim}=1) \in \mathbb{R}^d \quad \text{(average pooling)} \\
+h_1 &= \text{Swish}(\text{Linear}(h_{\text{pool}})) \in \mathbb{R}^d \\
+v &= \tanh(\text{Linear}(h_1)) \in [-1, 1]
+\end{align}
+
+Interpretation: $v \approx +1$ (winning), $v \approx -1$ (losing), $v \approx 0$ (draw)
+
+% ============================================================================
+\section{Reinforcement Learning Framework}
+% ============================================================================
+
+\subsection{Proximal Policy Optimization (PPO)}
+
+PPO is the training algorithm of choice for its stability and sample efficiency.
+
+\subsubsection{Objective Function}
+
+The PPO clipped objective:
+
+\begin{equation}
+L^{\text{CLIP}}(\theta) = \mathbb{E}_t \left[ \min\left( r_t(\theta) \hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t \right) \right]
+\end{equation}
+
+where:
+\begin{align}
+r_t(\theta) &= \frac{\pi_\theta(a_t | s_t)}{\pi_{\theta_{\text{old}}}(a_t | s_t)} \quad \text{(probability ratio)} \\
+\hat{A}_t &= \delta_t + (\gamma \lambda) \delta_{t+1} + \cdots + (\gamma \lambda)^{T-t} \delta_T \quad \text{(GAE advantage)}
+\end{align}
+
+Value function loss:
+\begin{equation}
+L^{\text{VF}}(\theta) = \mathbb{E}_t \left[ \left( V_\theta(s_t) - V_t^{\text{target}} \right)^2 \right]
+\end{equation}
+
+Entropy bonus (for exploration):
+\begin{equation}
+H(\pi_\theta) = -\mathbb{E}_{a \sim \pi_\theta} [\log \pi_\theta(a | s)]
+\end{equation}
+
+Total loss:
+\begin{equation}
+L(\theta) = -L^{\text{CLIP}}(\theta) + c_1 L^{\text{VF}}(\theta) - c_2 H(\pi_\theta)
+\end{equation}
+
+Typical hyperparameters: $\epsilon = 0.2$, $c_1 = 0.5$, $c_2 = 0.01$
+
+\subsubsection{Generalized Advantage Estimation (GAE)}
+
+GAE computes advantages with bias-variance tradeoff:
+
+\begin{align}
+\delta_t &= r_t + \gamma V(s_{t+1}) - V(s_t) \quad \text{(TD error)} \\
+\hat{A}_t^{\text{GAE}(\gamma, \lambda)} &= \sum_{l=0}^\infty (\gamma \lambda)^l \delta_{t+l}
+\end{align}
+
+where:
+\begin{itemize}
+    \item $\gamma = 0.99$: discount factor
+    \item $\lambda = 0.95$: GAE parameter
+    \item $\lambda = 0$: high bias, low variance (TD)
+    \item $\lambda = 1$: low bias, high variance (Monte Carlo)
+\end{itemize}
+
+\subsubsection{Training Loop}
+
+\begin{algorithm}[H]
+\caption{PPO Training for STAC-RL}
+\begin{algorithmic}[1]
+\STATE Initialize policy $\pi_\theta$ and value function $V_\phi$
+\FOR{iteration $= 1, 2, \ldots$}
+    \STATE Collect trajectories $\tau = \{s_t, a_t, r_t\}$ using $\pi_{\theta_{\text{old}}}$
+    \STATE Compute returns $R_t = \sum_{t'=t}^T \gamma^{t'-t} r_{t'}$
+    \STATE Compute advantages $\hat{A}_t$ using GAE
+    \STATE Normalize advantages: $\hat{A}_t \leftarrow (\hat{A}_t - \mu_A) / \sigma_A$
+    \FOR{epoch $= 1, \ldots, K$}
+        \FOR{minibatch in trajectories}
+            \STATE Compute policy ratio $r_t(\theta) = \pi_\theta(a_t | s_t) / \pi_{\theta_{\text{old}}}(a_t | s_t)$
+            \STATE Compute clipped objective $L^{\text{CLIP}}$
+            \STATE Compute value loss $L^{\text{VF}}$
+            \STATE Compute entropy $H(\pi_\theta)$
+            \STATE Update $\theta$ using $\nabla_\theta \left[ -L^{\text{CLIP}} + c_1 L^{\text{VF}} - c_2 H \right]$
+        \ENDFOR
+    \ENDFOR
+    \STATE Update $\theta_{\text{old}} \leftarrow \theta$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Reward Shaping}
+
+For chess, the reward structure is:
+
+\begin{equation}
+r_t = \begin{cases}
++1 & \text{if checkmate (win)} \\
+-1 & \text{if checkmated (loss)} \\
+0 & \text{if draw or stalemate} \\
+0 & \text{otherwise (intermediate move)}
+\end{cases}
+\end{equation}
+
+Optional reward shaping (to accelerate learning):
+\begin{align}
+r_t^{\text{shaped}} &= r_t + \alpha \Delta V_t \\
+\Delta V_t &= V(s_{t+1}) - V(s_t) \quad \text{(value difference)}
+\end{align}
+
+where $\alpha \in [0.01, 0.1]$ weights the shaping term.
+
+\subsection{Self-Play Training}
+
+\begin{enumerate}
+    \item \textbf{Data Collection}: Generate games by self-play with exploration noise
+    \item \textbf{Experience Buffer}: Store $(s, a, r, s', \text{done})$ tuples
+    \item \textbf{Training}: Sample minibatches and update policy/value networks
+    \item \textbf{Evaluation}: Periodically evaluate against baseline/previous versions
+    \item \textbf{Iteration}: Repeat, saving checkpoints and tracking Elo
+\end{enumerate}
+
+\textbf{Exploration Strategy:}
+\begin{itemize}
+    \item Add Dirichlet noise to root policy: $\pi_{\text{explore}} = (1 - \epsilon) \pi + \epsilon \text{Dir}(\alpha)$
+    \item Temperature-based sampling: $P(a) \propto \pi(a)^{1/\tau}$
+    \item Anneal $\tau$ from 1.0 to 0.1 over first 30 moves
+\end{itemize}
+
+% ============================================================================
+\section{Performance Optimization}
+% ============================================================================
+
+\subsection{Memory Layout}
+
+\textbf{Cache-friendly data structures:}
+\begin{itemize}
+    \item Aligned allocations: \texttt{std::aligned\_alloc(64, size)} for 64-byte cache lines
+    \item Structure-of-Arrays (SoA) for better vectorization
+    \item Ping-pong buffers to minimize memory allocation overhead
+\end{itemize}
+
+\subsection{Parallelization}
+
+\textbf{CPU (OpenMP):}
+\begin{itemize}
+    \item Batch-level parallelism: \texttt{\#pragma omp parallel for}
+    \item SIMD vectorization: \texttt{\#pragma omp simd}
+    \item Nested parallelism for attention heads
+\end{itemize}
+
+\textbf{GPU (CUDA):}
+\begin{itemize}
+    \item Kernel fusion: Combine operations to reduce memory transfers
+    \item Asynchronous execution: Use CUDA streams for overlapping compute/copy
+    \item Mixed precision: FP16 for inference (2$\times$ throughput)
+\end{itemize}
+
+\subsection{Inference Optimization}
+
+\textbf{Batch processing:}
+\begin{itemize}
+    \item Accumulate requests until batch size reached or timeout
+    \item Target batch size: 256-512 for optimal GPU utilization
+\end{itemize}
+
+\textbf{Model quantization:}
+\begin{itemize}
+    \item INT8 quantization: 4$\times$ memory reduction, 2-3$\times$ speedup
+    \item Calibration using representative data
+    \item Per-channel quantization for accuracy preservation
+\end{itemize}
+
+\textbf{Expected performance (RTX 3090):}
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\hline
+\textbf{Model} & \textbf{Batch Size} & \textbf{Latency (ms)} & \textbf{Throughput (pos/s)} \\
+\hline
+Small  & 256 & 8  & 32{,}000 \\
+Base   & 256 & 15 & 17{,}000 \\
+Large  & 256 & 28 & 9{,}000  \\
+XLarge & 128 & 45 & 2{,}800  \\
+\hline
+\end{tabular}
+\caption{Expected inference performance (FP16)}
+\end{table}
+
+% ============================================================================
+\section{Implementation Details}
+% ============================================================================
+
+\subsection{Directory Structure}
+
+\begin{verbatim}
+stac-rl/
+├── include/
+│   ├── common/          # Types, config, utilities
+│   ├── model/           # Transformer, FlashAttention, heads
+│   ├── env/             # Environment, adapters, observation
+│   └── training/        # PPO, optimizers, losses
+├── src/
+│   ├── model/           # Model implementations
+│   └── main_infer.cpp   # Inference demo
+├── cuda/                # CUDA kernels (FlashAttention, etc.)
+├── scripts/             # Build and utility scripts
+└── CMakeLists.txt       # Build configuration
+\end{verbatim}
+
+\subsection{Key Classes}
+
+\begin{itemize}
+    \item \texttt{FlashAttention}: Core attention mechanism with tiling
+    \item \texttt{MultiHeadFlashAttention}: Fused QKV projection + attention + output
+    \item \texttt{FlashTransformerBlock}: Complete transformer layer
+    \item \texttt{SquareFlashTransformer}: Full transformer stack (64-token optimized)
+    \item \texttt{STACFlashModel}: Complete actor-critic model
+    \item \texttt{PPO}: Training algorithm implementation
+    \item \texttt{ChessAdapter}: Interface to UCI engines / Lichess
+\end{itemize}
+
+\subsection{Build System}
+
+\textbf{CMake configuration:}
+\begin{verbatim}
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DUSE_CUDA=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=86 \
+      -DUSE_OPENMP=ON \
+      ..
+\end{verbatim}
+
+\textbf{Dependencies:}
+\begin{itemize}
+    \item C++17 compiler (GCC $\geq$ 9, Clang $\geq$ 10)
+    \item CUDA Toolkit $\geq$ 11.0 (optional, for GPU acceleration)
+    \item OpenMP (for CPU parallelization)
+    \item cuBLAS, cuDNN (for optimized linear layers)
+\end{itemize}
+
+% ============================================================================
+\section{Future Work}
+% ============================================================================
+
+\subsection{Model Enhancements}
+
+\begin{enumerate}
+    \item \textbf{FlashAttention-2}: Implement latest optimizations (2$\times$ faster)
+    \item \textbf{Rotary Position Embeddings}: Better length extrapolation
+    \item \textbf{Mixture of Experts}: Sparse models for larger capacity
+    \item \textbf{Multi-Query Attention}: Reduce KV cache size for faster inference
+\end{enumerate}
+
+\subsection{Training Improvements}
+
+\begin{enumerate}
+    \item \textbf{Distributed Training}: Data/model parallelism across multiple GPUs
+    \item \textbf{Prioritized Experience Replay}: Focus on important positions
+    \item \textbf{Curriculum Learning}: Gradually increase difficulty
+    \item \textbf{Population-Based Training}: Hyperparameter optimization
+\end{enumerate}
+
+\subsection{System Features}
+
+\begin{enumerate}
+    \item \textbf{ONNX Export}: For deployment and interoperability
+    \item \textbf{TensorRT Integration}: Further optimize inference
+    \item \textbf{Multi-GPU Inference}: Batch splitting for ultra-high throughput
+    \item \textbf{Model Distillation}: Create smaller, faster student models
+\end{enumerate}
+
+% ============================================================================
+\section{Conclusion}
+% ============================================================================
+
+STAC-RL represents a modern, high-performance approach to chess AI combining:
+
+\begin{itemize}
+    \item \textbf{Efficient attention mechanisms} (FlashAttention) for scalability
+    \item \textbf{Transformer architectures} for capturing long-range dependencies
+    \item \textbf{Policy gradient methods} (PPO) for stable reinforcement learning
+    \item \textbf{High-performance C++/CUDA implementation} for real-world deployment
+\end{itemize}
+
+The system is designed to be:
+\begin{itemize}
+    \item \textbf{Modular}: Clean separation of concerns for easy extension
+    \item \textbf{Scalable}: From small models (3M params) to large models (132M+ params)
+    \item \textbf{Efficient}: Optimized for both training and inference
+    \item \textbf{Extensible}: Easy to adapt to other board games or domains
+\end{itemize}
+
+% ============================================================================
+\section{Mathematical Appendix}
+% ============================================================================
+
+\subsection{Attention Complexity Analysis}
+
+\textbf{Standard Attention:}
+\begin{align}
+\text{Compute } S &= QK^T: \quad O(N^2 d) \text{ FLOPs}, \quad O(N^2) \text{ memory} \\
+\text{Softmax}(S) &: \quad O(N^2) \text{ FLOPs}, \quad O(N^2) \text{ memory} \\
+P \cdot V &: \quad O(N^2 d) \text{ FLOPs}, \quad O(Nd) \text{ memory} \\
+\text{Total} &: \quad O(N^2 d) \text{ FLOPs}, \quad O(N^2 + Nd) \text{ memory}
+\end{align}
+
+\textbf{FlashAttention:}
+\begin{align}
+\text{Blocks} &: \quad T_q = \lceil N / B_q \rceil, \quad T_k = \lceil N / B_k \rceil \\
+\text{Operations per block} &: \quad O(B_q B_k d) \\
+\text{Total FLOPs} &: \quad O(T_q T_k B_q B_k d) = O(N^2 d) \quad \text{(same)} \\
+\text{Memory} &: \quad O(Nd + B_q d + B_k d) \quad \text{(sublinear in } N \text{)}
+\end{align}
+
+For $N = 64$, $d = 512$, $B_q = B_k = 64$:
+\begin{itemize}
+    \item Standard: $36{,}864$ floats $\approx$ 147 KB
+    \item FlashAttention: $32{,}768$ floats $\approx$ 131 KB
+    \item Reduction: 8.5$\times$ for attention matrix elimination
+\end{itemize}
+
+\subsection{Gradient Computation}
+
+For PPO policy gradient:
+\begin{align}
+\nabla_\theta J(\theta) &= \mathbb{E}_\tau \left[ \sum_{t=0}^T \nabla_\theta \log \pi_\theta(a_t | s_t) \hat{A}_t \right] \\
+\nabla_\theta \log \pi_\theta(a_t | s_t) &= \frac{\nabla_\theta \pi_\theta(a_t | s_t)}{\pi_\theta(a_t | s_t)}
+\end{align}
+
+For value function:
+\begin{equation}
+\nabla_\phi L^{\text{VF}} = 2 \mathbb{E}_t \left[ \left( V_\phi(s_t) - V_t^{\text{target}} \right) \nabla_\phi V_\phi(s_t) \right]
+\end{equation}
+
+\subsection{Softmax Numerical Stability}
+
+Standard softmax (numerically unstable):
+\begin{equation}
+\text{softmax}(x_i) = \frac{e^{x_i}}{\sum_j e^{x_j}}
+\end{equation}
+
+Safe softmax (FlashAttention):
+\begin{equation}
+\text{softmax}(x_i) = \frac{e^{x_i - m}}{\sum_j e^{x_j - m}}, \quad m = \max_j x_j
+\end{equation}
+
+This prevents overflow when $x_j$ is large.
+
+% ============================================================================
+\begin{thebibliography}{99}
+% ============================================================================
+
+\bibitem{vaswani2017attention}
+Vaswani, A., Shazeer, N., Parmar, N., et al. (2017).
+\textit{Attention is All You Need}.
+Advances in Neural Information Processing Systems (NeurIPS).
+
+\bibitem{dao2022flashattention}
+Dao, T., Fu, D. Y., Ermon, S., Rudra, A., \& Ré, C. (2022).
+\textit{FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness}.
+Advances in Neural Information Processing Systems (NeurIPS).
+
+\bibitem{schulman2017ppo}
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A., \& Klimov, O. (2017).
+\textit{Proximal Policy Optimization Algorithms}.
+arXiv preprint arXiv:1707.06347.
+
+\bibitem{silver2017alphazero}
+Silver, D., Hubert, T., Schrittwieser, J., et al. (2017).
+\textit{Mastering Chess and Shogi by Self-Play with a General Reinforcement Learning Algorithm}.
+arXiv preprint arXiv:1712.01815.
+
+\bibitem{zhang2019root}
+Zhang, B., \& Sennrich, R. (2019).
+\textit{Root Mean Square Layer Normalization}.
+Advances in Neural Information Processing Systems (NeurIPS).
+
+\bibitem{shazeer2020glu}
+Shazeer, N. (2020).
+\textit{GLU Variants Improve Transformer}.
+arXiv preprint arXiv:2002.05202.
+
+\bibitem{su2021roformer}
+Su, J., Lu, Y., Pan, S., Murtadha, A., Wen, B., \& Liu, Y. (2021).
+\textit{RoFormer: Enhanced Transformer with Rotary Position Embedding}.
+arXiv preprint arXiv:2104.09864.
+
+\bibitem{dao2023flashattention2}
+Dao, T. (2023).
+\textit{FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning}.
+arXiv preprint arXiv:2307.08691.
+
+\end{thebibliography}
+
+\end{document}

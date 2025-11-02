@@ -93,13 +93,13 @@ UCIAdapter::~UCIAdapter() = default;
 
 Observation UCIAdapter::fen_to_observation(const std::string& fen) const {
     // Parse FEN and create 18x8x8 observation tensor
-    Observation obs;
-    obs.planes.resize(18 * 64, 0.0f);
+    ObservationTensor tensor;
+    std::fill(tensor.begin(), tensor.end(), 0.0f);
     
     // TODO: Implement FEN parsing
     // For now, return empty observation
     
-    return obs;
+    return Observation(tensor);
 }
 
 ActionMask UCIAdapter::uci_moves_to_mask(
@@ -107,12 +107,12 @@ ActionMask UCIAdapter::uci_moves_to_mask(
     Color side_to_move) const {
     
     ActionMask mask;
-    mask.legal_actions.resize(4672, 0);
+    std::fill(mask.begin(), mask.end(), 0);
     
     // TODO: Convert UCI moves to action indices
     // For now, mark first few actions as legal
     for (size_t i = 0; i < std::min(uci_moves.size(), size_t(100)); ++i) {
-        mask.legal_actions[i] = 1;
+        mask[i] = 1;
     }
     
     return mask;
@@ -182,9 +182,9 @@ LichessAdapter::LichessAdapter(const Config& config)
 LichessAdapter::~LichessAdapter() = default;
 
 Observation LichessAdapter::fen_to_observation(const std::string& fen) const {
-    Observation obs;
-    obs.planes.resize(18 * 64, 0.0f);
-    return obs;
+    ObservationTensor tensor;
+    std::fill(tensor.begin(), tensor.end(), 0.0f);
+    return Observation(tensor);
 }
 
 ActionMask LichessAdapter::uci_moves_to_mask(
@@ -192,7 +192,7 @@ ActionMask LichessAdapter::uci_moves_to_mask(
     Color side_to_move) const {
     
     ActionMask mask;
-    mask.legal_actions.resize(4672, 0);
+    std::fill(mask.begin(), mask.end(), 0);
     return mask;
 }
 

@@ -1,13 +1,22 @@
 cmake_minimum_required(VERSION 3.18)
 
-find_package(CUDA QUIET)
+# Try to enable CUDA language
+include(CheckLanguage)
+check_language(CUDA)
 
-if(CUDA_FOUND)
+if(CMAKE_CUDA_COMPILER AND USE_CUDA)
     enable_language(CUDA)
     
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 75 80 86)  # Turing, Ampere, Ada
+    
+    # Set CUDA architectures (can be overridden)
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 75)  # Default to T4
+    endif()
+    
+    # Find CUDA toolkit
+    find_package(CUDAToolkit REQUIRED)
     
     # CUDA source files
     set(CUDA_SOURCES
@@ -24,8 +33,8 @@ if(CUDA_FOUND)
     )
     
     target_link_libraries(stac_cuda PUBLIC
-        ${CUDA_LIBRARIES}
-        ${CUDA_CUBLAS_LIBRARIES}
+        CUDA::cudart
+        CUDA::cublas
     )
     
     # Set CUDA compilation flags
@@ -37,11 +46,11 @@ if(CUDA_FOUND)
         >
     )
     
-    message(STATUS "CUDA found: ${CUDA_VERSION}")
-    message(STATUS "CUDA Toolkit: ${CUDA_TOOLKIT_ROOT_DIR}")
-    message(STATUS "CUDA Libraries: ${CUDA_LIBRARIES}")
+    message(STATUS "CUDA enabled")
+    message(STATUS "CUDA Compiler: ${CMAKE_CUDA_COMPILER}")
+    message(STATUS "CUDA Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 else()
-    message(STATUS "CUDA not found - building CPU-only version")
+    message(STATUS "CUDA not found or disabled - building CPU-only version")
     
     # Create empty library for CPU-only builds
     add_library(stac_cuda INTERFACE)

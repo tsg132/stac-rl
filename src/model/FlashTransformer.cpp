@@ -8,6 +8,11 @@
 #include <immintrin.h>  // For SIMD on x86
 #endif
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#endif
+
 namespace stac::model {
 
 // ============================================================================

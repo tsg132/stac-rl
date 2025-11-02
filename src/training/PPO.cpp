@@ -10,44 +10,12 @@
 namespace stac::training {
 
 // ============================================================================
-// Trajectory Batch for Training
-// ============================================================================
-
-struct TrajectoryBatch {
-    std::vector<ObservationTensor> observations;
-    std::vector<ActionIndex> actions;
-    std::vector<float> rewards;
-    std::vector<float> values;
-    std::vector<float> log_probs;
-    std::vector<bool> dones;
-    
-    std::vector<float> returns;
-    std::vector<float> advantages;
-    
-    int size() const { return observations.size(); }
-    
-    void clear() {
-        observations.clear();
-        actions.clear();
-        rewards.clear();
-        values.clear();
-        log_probs.clear();
-        dones.clear();
-        returns.clear();
-        advantages.clear();
-    }
-};
-
-// ============================================================================
 // PPO Trainer Implementation
 // ============================================================================
 
-class PPOTrainer {
-public:
-    PPOTrainer(model::STACFlashModel& model,
-               env::VectorizedEnvironment& envs,
-               const TrainingConfig& config)
-        : model_(model), envs_(envs), config_(config) {
+PPOTrainer::PPOTrainer(model::STACFlashModel& model,
+                       const TrainingConfig& config)
+    : model_(model), config_(config), iteration_(0) {
         
         // Create optimizer
         AdamConfig adam_config;

@@ -6,8 +6,11 @@
 #include <cmath>
 
 #ifdef USE_CUDA
-#include <cuda_runtime.h>
-#include <cuda_fp16.h>
+// Forward declarations for CUDA types (avoid including headers in .hpp)
+struct CUstream_st;
+typedef struct CUstream_st* cudaStream_t;
+struct __half;
+typedef struct __half half;
 #endif
 
 namespace stac::model {
